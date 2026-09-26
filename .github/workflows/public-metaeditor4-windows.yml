@@ -1,0 +1,42 @@
+name: Public MetaEditor4 Windows retrieval
+on:
+  push:
+    paths: ['.github/workflows/public-metaeditor4-windows.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vendor:
+    runs-on: windows-latest
+    timeout-minutes: 9
+    steps:
+      - name: Retrieve official MT4-specific compiler
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path toolchain -Force | Out-Null
+          $url='https://download.terminal.free/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe'
+          Invoke-WebRequest -Uri $url -OutFile toolchain/mt4setup.exe
+          $p=Start-Process -FilePath "$pwd/toolchain/mt4setup.exe" -ArgumentList '/auto' -PassThru
+          try { Wait-Process -Id $p.Id -Timeout 230 -ErrorAction Stop } catch { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          Get-Process terminal,terminal64,metatester64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $files=@();foreach($root in @('C:\Program Files','C:\Program Files (x86)',"$env:APPDATA\MetaQuotes")){if(Test-Path $root){$files+=Get-ChildItem $root -Filter metaeditor.exe -Recurse -ErrorAction SilentlyContinue}}
+          $receipt=@{public_vendor_tools_only=$true;user_strategy_uploaded=$false;compiler_paths=@($files.FullName);source_url=$url;native_compiles=0}
+          if($files.Count -gt 0){
+            $base=$files[0].DirectoryName
+            New-Item -ItemType Directory -Path toolchain/vendor -Force | Out-Null
+            Copy-Item $files[0].FullName toolchain/vendor/metaeditor.exe
+            if(Test-Path "$base\MQL4\Include"){Copy-Item "$base\MQL4\Include" toolchain/vendor/Include -Recurse}
+            Compress-Archive -Path toolchain/vendor/* -DestinationPath toolchain/vendor-metaeditor4.zip
+            $receipt.compiler_version=$files[0].VersionInfo.FileVersion
+          }
+          $receipt | ConvertTo-Json -Depth 5 | Out-File toolchain/receipt.json
+      - name: Retain official MT4 compiler and receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-metaeditor4-windows
+          path: |
+            toolchain/vendor-metaeditor4.zip
+            toolchain/receipt.json
+          retention-days: 1
+          if-no-files-found: error
