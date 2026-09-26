@@ -1,0 +1,67 @@
+name: Public MQL toolchain retrieval
+on:
+  push:
+    paths: ['.github/workflows/public-mql-toolchain.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Acquire public Wine runtime
+        shell: bash
+        run: |
+          mkdir -p toolchain
+          python3 - <<'PY'
+          import urllib.request,json,pathlib,hashlib
+          root=pathlib.Path('toolchain');headers={'User-Agent':'Public-research-toolchain'}
+          url='https://api.github.com/repos/Kron4ek/Wine-Builds/releases/latest'
+          r=json.load(urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=30))
+          candidates=[a for a in r.get('assets',[]) if a['name'].endswith('-amd64.tar.xz') and 'staging' not in a['name'] and 'proton' not in a['name']]
+          if not candidates: raise RuntimeError('No declared amd64 Wine archive')
+          a=candidates[0]
+          data=urllib.request.urlopen(urllib.request.Request(a['browser_download_url'],headers=headers),timeout=90).read()
+          (root/'wine-runtime.tar.xz').write_bytes(data)
+          (root/'wine-source.json').write_text(json.dumps({'source':a['browser_download_url'],'tag':r['tag_name'],'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)},indent=2))
+          PY
+      - name: Public MetaTrader installer
+        shell: bash
+        run: |
+          curl --fail --location --max-time 90 'https://download.mql5.com/cdn/web/metaquotes.ltd/mt5/mt5setup.exe' -o toolchain/mt5setup.exe
+          mkdir -p wine-runtime
+          tar -xJf toolchain/wine-runtime.tar.xz -C wine-runtime
+          WINE_BIN=$(find "$PWD/wine-runtime" -path '*/bin/wine' -type f | head -1)
+          if [ -z "$WINE_BIN" ]; then WINE_BIN=$(find "$PWD/wine-runtime" -path '*/bin/wine64' -type f | head -1); fi
+          printf '%s\n' "$WINE_BIN" > toolchain/wine-bin-path.txt
+          export WINEARCH=win64 WINEPREFIX="$PWD/vendor-prefix" WINEDEBUG=-all
+          set +e
+          timeout 180s xvfb-run -a "$WINE_BIN" toolchain/mt5setup.exe /auto > toolchain/vendor-install.log 2>&1
+          printf '%s\n' "$?" > toolchain/vendor-install-exit.txt
+          find "$WINEPREFIX" -iname '*metaeditor*' -o -iname 'terminal64.exe' > toolchain/vendor-files.txt
+          python3 - <<'PY'
+          import pathlib,zipfile,json,hashlib
+          root=pathlib.Path('toolchain');prefix=pathlib.Path('vendor-prefix')
+          paths=list(prefix.rglob('metaeditor64.exe'))+list(prefix.rglob('metaeditor.exe'))
+          receipt={'public_toolchain_only':True,'user_strategy_uploaded':False,'compiles_performed':0,'compiler_paths':[str(p) for p in paths]}
+          if paths:
+              base=paths[0].parent
+              with zipfile.ZipFile(root/'vendor-metaeditor.zip','w',zipfile.ZIP_DEFLATED) as z:
+                  for p in base.rglob('*'):
+                      if not p.is_file() or p.suffix.lower() in ('.ttf','.otf','.woff','.woff2','.fon'): continue
+                      if p.name.lower()=='metaeditor64.exe' or p.name.lower()=='metaeditor.exe' or 'Include' in p.parts or 'Bases' in p.parts:
+                          z.write(p,str(p.relative_to(base)))
+              receipt['vendor_zip_sha256']=hashlib.sha256((root/'vendor-metaeditor.zip').read_bytes()).hexdigest()
+          (root/'toolchain-receipt.json').write_text(json.dumps(receipt,indent=2))
+          PY
+          exit 0
+      - name: Retain public toolchain for local research only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-mql-toolchain
+          path: toolchain/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
