@@ -9,55 +9,71 @@ permissions:
 jobs:
   retrieve:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
-      - name: Download public price history only
+      - name: Prepare pinned public-data downloader
         shell: bash
         run: |
-          set -uo pipefail
-          mkdir -p public-history
-          npm install --ignore-scripts --no-audit --no-fund dukascopy-node@1.50.0 > public-history/npm-install.log 2>&1
-          npm_status=$?
-          printf 'npm_install_exit_code=%s\n' "$npm_status" > public-history/download-status.txt
-          if [ "$npm_status" -eq 0 ]; then
-            for tf in d1 h1; do
-              for sym in eurusd usdcad audusd; do
-                for side in bid ask; do
-                  label="${sym}_${tf}_${side}_2005_2025"
-                  timeout 70s ./node_modules/.bin/dukascopy-node -i "$sym" -from 2005-01-01 -to 2026-01-01 -t "$tf" -p "$side" -f csv -df iso -v -bs 20 -bp 300 -r 1 -rp 1000 -dir public-history -fn "$label" > "public-history/${label}.log" 2>&1
-                  status=$?
-                  printf '%s exit_code=%s\n' "$label" "$status" >> public-history/download-status.txt
-                done
-              done
+          mkdir -p public-daily public-hourly
+          npm install --ignore-scripts --no-audit --no-fund dukascopy-node@1.50.0 > public-daily/npm-install.log 2>&1
+          ./node_modules/.bin/dukascopy-node --help > public-daily/cli-help.txt
+      - name: Retrieve daily bid and ask history with bounded backoff
+        shell: bash
+        run: |
+          set +e
+          for sym in usdcad audusd eurusd; do
+            for side in bid ask; do
+              label="${sym}_d1_${side}_2005_2025"
+              timeout 85s ./node_modules/.bin/dukascopy-node -i "$sym" -from 2005-01-01 -to 2026-01-01 -t d1 -p "$side" -f csv -df iso -v -bs 1 -bp 1500 -r 2 -rp 15000 -dir public-daily -fn "$label" > "public-daily/${label}.log" 2>&1
+              printf '%s exit_code=%s\n' "$label" "$?" >> public-daily/download-status.txt
+              sleep 5
             done
-          fi
+          done
           python3 - <<'PY'
-          import urllib.request,pathlib,json,hashlib,datetime
-          root=pathlib.Path('public-history')
-          receipt={'kind':'PUBLIC_MARKET_DATA_RETRIEVAL_ONLY','generated_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'downloader':'dukascopy-node@1.50.0','requested_start':'2005-01-01','requested_end_exclusive':'2026-01-01','symbols':['EURUSD','USDCAD','AUDUSD'],'timeframes':['d1','h1'],'price_sides':['bid','ask'],'strategy_code_included':False,'broker_account_accessed':False,'files':[]}
-          url='https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip'
-          try:
-              with urllib.request.urlopen(url,timeout=30) as r:
-                  raw=r.read(10000000)
-              (root/'ecb_reference_history_NOT_EXECUTION_QUOTES.zip').write_bytes(raw)
-              receipt['ecb_reference_backup']={'url':url,'bytes':len(raw),'not_bid_ask_or_trade_ticks':True}
-          except Exception as e:
-              receipt['ecb_reference_backup']={'url':url,'error':str(e)}
+          import pathlib,hashlib,json,datetime
+          root=pathlib.Path('public-daily');items=[]
           for p in sorted(root.glob('*')):
               if p.is_file():
-                  raw=p.read_bytes(); item={'file':p.name,'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
+                  b=p.read_bytes();a={'file':p.name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()}
                   if p.suffix=='.csv':
-                      lines=raw.decode('utf-8-sig').splitlines();item.update(rows=max(0,len(lines)-1),header=lines[0] if lines else '',first=lines[1] if len(lines)>1 else '',last=lines[-1] if len(lines)>1 else '')
-                  receipt['files'].append(item)
-          (root/'retrieval_receipt.json').write_text(json.dumps(receipt,indent=2))
-          print(json.dumps(receipt,indent=2))
+                      s=b.decode('utf-8-sig').splitlines();a.update(rows=max(0,len(s)-1),header=s[0] if s else '',first=s[1] if len(s)>1 else '',last=s[-1] if len(s)>1 else '')
+                  items.append(a)
+          (root/'retrieval_receipt.json').write_text(json.dumps({'kind':'PUBLIC_DUKASCOPY_QUOTES_NOT_STRATEGY_RESULTS','generated_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'downloader':'dukascopy-node@1.50.0','window':'2005-01-01 <= t < 2026-01-01','timeframe':'d1','utc_offset_minutes':0,'files':items},indent=2))
           PY
-      - name: Retain public data and retrieval receipts for one day
+      - name: Retain daily public data independently
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: public-fx-history-2005-2025
-          path: public-history/
+          name: public-fx-daily-2005-2025
+          path: public-daily/
           if-no-files-found: error
           retention-days: 1
-          compression-level: 6
+      - name: Retrieve hourly bid history with bounded backoff
+        shell: bash
+        run: |
+          set +e
+          for sym in eurusd usdcad audusd; do
+            label="${sym}_h1_bid_2005_2025"
+            timeout 210s ./node_modules/.bin/dukascopy-node -i "$sym" -from 2005-01-01 -to 2026-01-01 -t h1 -p bid -f csv -df iso -v -bs 3 -bp 1000 -r 1 -rp 15000 -dir public-hourly -fn "$label" > "public-hourly/${label}.log" 2>&1
+            printf '%s exit_code=%s\n' "$label" "$?" >> public-hourly/download-status.txt
+            sleep 5
+          done
+          python3 - <<'PY'
+          import pathlib,hashlib,json,datetime
+          root=pathlib.Path('public-hourly');items=[]
+          for p in sorted(root.glob('*')):
+              if p.is_file():
+                  b=p.read_bytes();a={'file':p.name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()}
+                  if p.suffix=='.csv':
+                      s=b.decode('utf-8-sig').splitlines();a.update(rows=max(0,len(s)-1),header=s[0] if s else '',first=s[1] if len(s)>1 else '',last=s[-1] if len(s)>1 else '')
+                  items.append(a)
+          (root/'retrieval_receipt.json').write_text(json.dumps({'kind':'PUBLIC_DUKASCOPY_QUOTES_NOT_STRATEGY_RESULTS','generated_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'downloader':'dukascopy-node@1.50.0','window':'2005-01-01 <= t < 2026-01-01','timeframe':'h1','price_side':'bid','utc_offset_minutes':0,'files':items},indent=2))
+          PY
+      - name: Retain hourly public data and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-fx-hourly-bid-2005-2025
+          path: public-hourly/
+          if-no-files-found: error
+          retention-days: 1
