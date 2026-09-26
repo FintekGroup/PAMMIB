@@ -1,0 +1,49 @@
+name: Public AUDUSD annual candle archive
+on:
+  push:
+    paths:
+      - '.github/workflows/public-audusd-archive.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Retrieve documented public annual files
+        shell: bash
+        run: |
+          mkdir -p public-annual
+          python3 - <<'PY'
+          import pathlib,urllib.request,urllib.error,time,json,hashlib,datetime,lzma,struct,csv,math
+          root=pathlib.Path('public-annual');rows=[];rec={'source':'https://datafeed.dukascopy.com/datafeed','instrument':'AUDUSD','price_side':'BID','timeframe':'d1','raw_record_schema':'>IIIII f : seconds,open,close,low,high,volume','price_divisor':100000,'generated_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'files':[],'complete':False}
+          for year in range(2005,2026):
+              url=f'https://datafeed.dukascopy.com/datafeed/AUDUSD/{year}/BID_candles_day_1.bi5'
+              item={'year':year,'url':url}
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'public-candle-research/1.0'}),timeout=15) as r:b=r.read(3000000);item['http_status']=r.status
+                  if not b:raise ValueError('empty response')
+                  (root/f'AUDUSD_{year}_BID_candles_day_1.bi5').write_bytes(b);raw=lzma.decompress(b)
+                  if len(raw)%24:raise ValueError('invalid record length')
+                  parsed=[];base=datetime.datetime(year,1,1,tzinfo=datetime.timezone.utc)
+                  for sec,o,c,l,h,v in struct.iter_unpack('>IIIIIf',raw):
+                      ts=base+datetime.timedelta(seconds=sec)
+                      if ts.year!=year or not (0<l<=min(o,c)<=max(o,c)<=h) or not math.isfinite(v):raise ValueError('invalid candle')
+                      parsed.append([ts.isoformat().replace('+00:00','Z'),o/100000,h/100000,l/100000,c/100000,v])
+                  rows.extend(parsed);item.update(bytes=len(b),sha256=hashlib.sha256(b).hexdigest(),rows=len(parsed),status='decoded')
+              except Exception as e:
+                  item.update(status='failed',error=type(e).__name__+': '+str(e));rec['files'].append(item);break
+              rec['files'].append(item);time.sleep(1)
+          if len(rec['files'])==21 and all(f['status']=='decoded' for f in rec['files']):
+              with (root/'audusd_d1_bid_2005_2025.csv').open('w',newline='') as f:w=csv.writer(f);w.writerow(['timestamp','open','high','low','close','volume']);w.writerows(rows)
+              rec['complete']=True;rec['rows']=len(rows)
+          (root/'receipt.json').write_text(json.dumps(rec,indent=2));print(json.dumps(rec,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-audusd-annual-archive
+          path: public-annual/
+          retention-days: 1
+          if-no-files-found: error
