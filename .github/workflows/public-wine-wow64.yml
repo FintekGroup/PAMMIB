@@ -1,0 +1,29 @@
+name: Public WoW64 runtime retrieval
+on:
+  push:
+    paths: ['.github/workflows/public-wine-wow64.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Retrieve declared WoW64 release asset
+        shell: python
+        run: |
+          import urllib.request,pathlib,json,hashlib
+          root=pathlib.Path('runtime');root.mkdir();hdr={'User-Agent':'Public-runtime-retrieval'}
+          r=json.load(urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/Kron4ek/Wine-Builds/releases/tags/11.18',headers=hdr),timeout=30))
+          a=next(a for a in r['assets'] if a['name']=='wine-11.18-amd64-wow64.tar.xz')
+          b=urllib.request.urlopen(urllib.request.Request(a['browser_download_url'],headers=hdr),timeout=90).read()
+          (root/a['name']).write_bytes(b)
+          (root/'receipt.json').write_text(json.dumps({'url':a['browser_download_url'],'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b),'no_user_code':True},indent=2))
+      - name: Retain public runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-wow64-runtime
+          path: runtime/
+          retention-days: 1
+          compression-level: 0
