@@ -1,0 +1,45 @@
+name: Public MetaEditor Windows retrieval
+on:
+  push:
+    paths: ['.github/workflows/public-metaeditor-windows.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vendor:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install public vendor compiler without account connection
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path toolchain -Force | Out-Null
+          $url='https://download.mql5.com/cdn/web/metaquotes.ltd/mt5/mt5setup.exe'
+          Invoke-WebRequest -Uri $url -OutFile toolchain/mt5setup.exe
+          $p=Start-Process -FilePath "$pwd/toolchain/mt5setup.exe" -ArgumentList '/auto' -PassThru
+          try { Wait-Process -Id $p.Id -Timeout 260 -ErrorAction Stop } catch { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          Get-Process terminal64,metatester64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $roots=@('C:\Program Files','C:\Program Files (x86)',"$env:APPDATA\MetaQuotes", "$env:LOCALAPPDATA\Programs")
+          $files=@();foreach($root in $roots){if(Test-Path $root){$files+=Get-ChildItem $root -Filter metaeditor64.exe -Recurse -ErrorAction SilentlyContinue}}
+          $receipt=@{public_vendor_tools_only=$true;user_strategy_uploaded=$false;compiler_paths=@($files.FullName);source_url=$url;native_compiles=0}
+          if($files.Count -gt 0){
+            $base=$files[0].DirectoryName
+            New-Item -ItemType Directory -Path toolchain/vendor -Force | Out-Null
+            Copy-Item $files[0].FullName toolchain/vendor/metaeditor64.exe
+            if(Test-Path "$base\MQL5\Include"){Copy-Item "$base\MQL5\Include" toolchain/vendor/Include -Recurse}
+            if(Test-Path "$base\MQL4\Include"){Copy-Item "$base\MQL4\Include" toolchain/vendor/Include4 -Recurse}
+            Compress-Archive -Path toolchain/vendor/* -DestinationPath toolchain/vendor-metaeditor.zip
+            $receipt.compiler_version=$files[0].VersionInfo.FileVersion
+          }
+          $receipt | ConvertTo-Json -Depth 5 | Out-File toolchain/receipt.json
+          Get-ChildItem toolchain -Recurse | Select-Object FullName,Length | Format-Table
+      - name: Retain public compiler and receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-metaeditor-windows
+          path: |
+            toolchain/vendor-metaeditor.zip
+            toolchain/receipt.json
+          retention-days: 1
+          if-no-files-found: error
