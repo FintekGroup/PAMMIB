@@ -1,0 +1,43 @@
+name: Public MT5 runtime retrieval
+on:
+  push:
+    paths: ['.github/workflows/public-mt5-runtime.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vendor:
+    runs-on: windows-latest
+    timeout-minutes: 7
+    steps:
+      - name: Collect public vendor runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path runtime -Force | Out-Null
+          $url='https://download.mql5.com/cdn/web/metaquotes.ltd/mt5/mt5setup.exe'
+          Invoke-WebRequest -Uri $url -OutFile runtime/setup.exe
+          $p=Start-Process -FilePath "$pwd/runtime/setup.exe" -ArgumentList '/auto' -PassThru
+          try{Wait-Process -Id $p.Id -Timeout 210 -ErrorAction Stop}catch{Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue}
+          Get-Process terminal64,metatester64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $f=Get-ChildItem 'C:\Program Files' -Filter terminal64.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          $receipt=@{public_vendor_runtime_only=$true;user_strategy_uploaded=$false;broker_credentials_provided=$false;source=$url}
+          if($f){
+            $base=$f.DirectoryName
+            New-Item -ItemType Directory -Path runtime/vendor -Force | Out-Null
+            foreach($name in @('terminal64.exe','metatester64.exe')){if(Test-Path "$base\$name"){Copy-Item "$base\$name" "runtime/vendor/$name"}}
+            if(Test-Path "$base\MQL5\Include"){Copy-Item "$base\MQL5\Include" runtime/vendor/Include -Recurse}
+            Compress-Archive -Path runtime/vendor/* -DestinationPath runtime/vendor-mt5-runtime.zip
+            $receipt.terminal_version=$f.VersionInfo.FileVersion
+          }
+          $receipt|ConvertTo-Json|Out-File runtime/receipt.json
+      - name: Retain public tools only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-mt5-runtime
+          path: |
+            runtime/vendor-mt5-runtime.zip
+            runtime/receipt.json
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
