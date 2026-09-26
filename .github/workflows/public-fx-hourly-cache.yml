@@ -1,0 +1,49 @@
+name: Public FX hourly cache
+on:
+  push:
+    paths: ['.github/workflows/public-fx-hourly-cache.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Install pinned downloader
+        run: npm install --ignore-scripts --no-audit --no-fund dukascopy-node@1.50.0
+      - name: Cache public historical quote objects before retrying failed ranges
+        shell: python
+        run: |
+          import subprocess,pathlib,time,json,hashlib,csv,datetime
+          root=pathlib.Path('public-hourly-cache');root.mkdir();started=time.monotonic();receipt={'public_quotes_only':True,'strategy_code_included':False,'provider':'Dukascopy','downloader':'dukascopy-node@1.50.0','items':[]}
+          for sym in ['eurusd','audusd']:
+              name=f'{sym}_h1_bid_2005_2025'
+              cmd=['./node_modules/.bin/dukascopy-node','-i',sym,'-from','2005-01-01','-to','2026-01-01','-t','h1','-p','bid','-f','csv','-df','iso','-v','-bs','4','-bp','1500','-r','2','-rp','8000','-ch','-chpath',str(root/'raw-cache'),'-dir',str(root),'-fn',name]
+              attempts=[]
+              for retry in range(5):
+                  if time.monotonic()-started>880:break
+                  try:
+                      r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=155)
+                      (root/f'{name}_attempt{retry}.log').write_bytes(r.stdout);item={'attempt':retry,'exit':r.returncode};attempts.append(item)
+                      p=root/f'{name}.csv'
+                      if p.exists() and p.stat().st_size>100:
+                          b=p.read_bytes();rows=list(csv.DictReader(b.decode().splitlines()));months={r['timestamp'][:7] for r in rows};expected={f'{y}-{m:02}' for y in range(2005,2026) for m in range(1,13)}
+                          item.update(rows=len(rows),sha256=hashlib.sha256(b).hexdigest(),first=rows[0]['timestamp'],last=rows[-1]['timestamp'],missing_months=sorted(expected-months))
+                          if r.returncode==0 and not item['missing_months'] and len(rows)>125000:item['download_completed']=True;break
+                  except Exception as e:attempts.append({'attempt':retry,'error':str(e)})
+                  time.sleep(12)
+              receipt['items'].append({'symbol':sym,'file':name+'.csv','attempts':attempts})
+              (root/'receipt.json').write_text(json.dumps(receipt,indent=2))
+          receipt['finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat();(root/'receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt,indent=2))
+      - name: Retain public CSV and receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-fx-hourly-cache
+          path: |
+            public-hourly-cache/*.csv
+            public-hourly-cache/*.json
+            public-hourly-cache/*.log
+          if-no-files-found: error
+          retention-days: 1
