@@ -1,0 +1,51 @@
+name: Public FX alternative history
+on:
+  push:
+    paths:
+      - '.github/workflows/public-fx-alternatives.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download independent public historical data
+        shell: bash
+        run: |
+          mkdir -p public-alternatives
+          python3 - <<'PY'
+          import urllib.request,urllib.error,pathlib,time,datetime,json,hashlib
+          from urllib.parse import quote
+          out=pathlib.Path('public-alternatives')
+          begin=int(datetime.datetime(2005,1,1,tzinfo=datetime.timezone.utc).timestamp())
+          end=int(datetime.datetime(2026,1,1,tzinfo=datetime.timezone.utc).timestamp())
+          requests=[]
+          for sym,ysym in [('EURUSD','EURUSD=X'),('USDCAD','CAD=X'),('AUDUSD','AUDUSD=X')]:
+              requests.append((sym+'_yahoo_daily.json','https://query1.finance.yahoo.com/v8/finance/chart/'+quote(ysym,safe='')+'?period1='+str(begin)+'&period2='+str(end)+'&interval=1d','YAHOO_PUBLIC_CHART_DAILY_OHLC_PRICE_SIDE_UNSPECIFIED'))
+              requests.append((sym+'_stooq_daily.csv','https://stooq.com/q/d/l/?s='+sym.lower()+'&i=d&d1=20050101&d2=20251231','STOOQ_PUBLIC_DAILY_OHLC_PRICE_SIDE_UNSPECIFIED'))
+              requests.append((sym+'_ejtrader_m15.csv','https://raw.githubusercontent.com/ejtraderLabs/historical-data/main/'+sym+'/'+sym+'m15.csv','THIRD_PARTY_REPOSITORY_PRIMARY_VENDOR_AND_TIMEZONE_UNVERIFIED'))
+          requests.append(('ecb_reference_history.zip','https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip','ECB_REFERENCE_RATES_NOT_EXECUTION_QUOTES'))
+          receipt={'kind':'PUBLIC_DATA_DOWNLOAD_ONLY','generated_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'strategy_code_included':False,'results':[]}
+          for name,url,kind in requests:
+              item={'file':name,'url':url,'source_kind':kind}
+              try:
+                  req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 (compatible; public historical data research)'})
+                  with urllib.request.urlopen(req,timeout=35) as r:
+                      b=r.read(55000001);item.update(http_status=r.status,content_type=r.headers.get('Content-Type'))
+                  if len(b)>55000000:raise ValueError('Response exceeds declared size limit')
+                  (out/name).write_bytes(b)
+                  item.update(bytes=len(b),sha256=hashlib.sha256(b).hexdigest(),downloaded=True)
+              except Exception as e:item.update(downloaded=False,error=type(e).__name__+': '+str(e))
+              receipt['results'].append(item);(out/'retrieval_receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(item));time.sleep(2)
+          PY
+      - name: Retain public alternatives and provenance for one day
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-fx-alternatives
+          path: public-alternatives/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 6
