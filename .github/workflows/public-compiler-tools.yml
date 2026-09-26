@@ -1,0 +1,54 @@
+name: Public compiler tooling only
+on:
+  push:
+    paths:
+      - '.github/workflows/public-compiler-tools.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  editor:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch official public installer and extract compiler installation
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\aq-editor | Out-Null
+          New-Item -ItemType Directory -Force compiler-output | Out-Null
+          $url='https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
+          Invoke-WebRequest $url -OutFile C:\aq-editor\mt5setup.exe
+          $p=Start-Process C:\aq-editor\mt5setup.exe -ArgumentList '/auto','/path:C:\aq-editor\mt5' -PassThru
+          for($i=0;$i -lt 90;$i++) { if(Test-Path C:\aq-editor\mt5\metaeditor64.exe) { break }; Start-Sleep -Seconds 3 }
+          Get-Process terminal64,metatester64,metaeditor64,mt5setup -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-ChildItem C:\aq-editor -Recurse | Select-Object FullName,Length | ConvertTo-Json | Out-File compiler-output\installation-files.json -Encoding utf8
+          if(Test-Path C:\aq-editor\mt5\metaeditor64.exe) {
+            Get-ChildItem C:\aq-editor\mt5 -File | Where-Object {$_.Extension -in '.exe','.dll'} | Copy-Item -Destination compiler-output
+            if(Test-Path C:\aq-editor\mt5\MQL5\Include) { Copy-Item C:\aq-editor\mt5\MQL5\Include compiler-output\Include -Recurse }
+            Get-Item C:\aq-editor\mt5\metaeditor64.exe | Select-Object -ExpandProperty VersionInfo | ConvertTo-Json | Out-File compiler-output\editor-version.json -Encoding utf8
+          }
+          Get-FileHash C:\aq-editor\mt5setup.exe | ConvertTo-Json | Out-File compiler-output\installer-sha256.json -Encoding utf8
+          'Official public compiler tooling only. No user strategy, credentials, or brokerage account data supplied. No font files copied.' | Out-File compiler-output\SCOPE.txt -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-metaeditor-tools
+          path: compiler-output/
+          retention-days: 1
+          if-no-files-found: error
+  wine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Fetch Debian 13 Wine64 runtime packages only
+        shell: bash
+        run: |
+          mkdir -p wine-tools
+          docker run --rm -v "$PWD/wine-tools:/out" debian:13-slim sh -c 'apt-get update > /out/apt-update.log 2>&1 && apt-get -y --download-only --no-install-recommends install wine64 wine > /out/apt-download.log 2>&1; cp /var/cache/apt/archives/*.deb /out/; rm -f /out/fonts-*.deb; ls -l /out/ > /out/files.txt'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-wine64-tools
+          path: wine-tools/
+          retention-days: 1
+          if-no-files-found: error
