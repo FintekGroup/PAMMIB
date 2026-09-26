@@ -1,0 +1,52 @@
+name: Public FX yearly cache
+on:
+  push:
+    paths: ['.github/workflows/public-fx-year-cache.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Pinned downloader
+        run: npm install --ignore-scripts --no-audit --no-fund dukascopy-node@1.50.0
+      - name: Collect individually recoverable public quote years
+        shell: python
+        run: |
+          import subprocess,pathlib,time,json,hashlib,datetime,csv
+          root=pathlib.Path('public-year-cache');root.mkdir()
+          receipt={'kind':'PUBLIC_QUOTES_ONLY_NO_TRADING_CODE','start_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'items':[]}
+          started=time.monotonic()
+          for symbol in ['usdcad','audusd']:
+              for year in range(2005,2026):
+                  if time.monotonic()-started > 760: break
+                  name=f'{symbol}_d1_bid_{year}'
+                  cmd=['./node_modules/.bin/dukascopy-node','-i',symbol,'-from',f'{year}-01-01','-to',f'{year+1}-01-01','-t','d1','-p','bid','-f','csv','-df','iso','-v','-bs','1','-bp','2000','-r','1','-rp','3000','-dir',str(root),'-fn',name]
+                  attempts=[]
+                  for retry in range(4):
+                      try:
+                          r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20)
+                          text=r.stdout.decode(errors='replace');(root/f'{name}_attempt{retry}.log').write_text(text)
+                          item={'exit':r.returncode,'attempt':retry};attempts.append(item)
+                          p=root/f'{name}.csv'
+                          if r.returncode==0 and p.exists() and p.stat().st_size>100:
+                              b=p.read_bytes();rows=list(csv.DictReader(b.decode().splitlines()))
+                              if len(rows)>=200 and rows[0]['timestamp'].startswith(str(year)) and rows[-1]['timestamp'].startswith(str(year)):
+                                  item.update(complete_year_download=True,rows=len(rows),sha256=hashlib.sha256(b).hexdigest(),first=rows[0]['timestamp'],last=rows[-1]['timestamp']);break
+                      except Exception as e: attempts.append({'attempt':retry,'error':str(e)})
+                      time.sleep(3+retry*4)
+                  receipt['items'].append({'symbol':symbol,'year':year,'file':f'{name}.csv','attempts':attempts})
+                  (root/'receipt.json').write_text(json.dumps(receipt,indent=2))
+                  time.sleep(2)
+          receipt['end_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat();(root/'receipt.json').write_text(json.dumps(receipt,indent=2))
+          print(json.dumps(receipt,indent=2))
+      - name: Retain public quote cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-fx-year-cache
+          path: public-year-cache/
+          retention-days: 1
+          if-no-files-found: error
