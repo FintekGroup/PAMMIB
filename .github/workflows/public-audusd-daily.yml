@@ -1,0 +1,38 @@
+name: Public AUDUSD daily history
+on:
+  push:
+    paths:
+      - '.github/workflows/public-audusd-daily.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - name: Download public AUDUSD daily bid candles only
+        shell: bash
+        run: |
+          mkdir -p public-audusd
+          npm install --ignore-scripts --no-audit --no-fund dukascopy-node@1.50.0 > public-audusd/install.log 2>&1
+          set +e
+          timeout 420s ./node_modules/.bin/dukascopy-node -i audusd -from 2005-01-01 -to 2026-01-01 -t d1 -p bid -f csv -df iso -v -bs 1 -bp 5000 -r 3 -rp 60000 -dir public-audusd -fn audusd_d1_bid_2005_2025 > public-audusd/download.log 2>&1
+          printf 'download_exit_code=%s\n' "$?" > public-audusd/status.txt
+          python3 - <<'PY'
+          import pathlib,json,hashlib,datetime
+          root=pathlib.Path('public-audusd');records=[]
+          for p in root.iterdir():
+              b=p.read_bytes();d={'file':p.name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()}
+              if p.suffix=='.csv':
+                  ls=b.decode().splitlines();d.update(rows=max(0,len(ls)-1),first=ls[1] if len(ls)>1 else None,last=ls[-1] if len(ls)>1 else None)
+              records.append(d)
+          (root/'receipt.json').write_text(json.dumps({'source':'Dukascopy via dukascopy-node@1.50.0','requested_window':'2005-01-01 <= t < 2026-01-01','generated_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'kind':'PUBLIC_DATA_NOT_TRADING_RESULTS','files':records},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-audusd-daily
+          path: public-audusd/
+          retention-days: 1
+          if-no-files-found: error
