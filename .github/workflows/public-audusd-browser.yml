@@ -1,0 +1,54 @@
+name: Public AUDUSD browser download
+on:
+  push:
+    paths:
+      - '.github/workflows/public-audusd-browser.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public_download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Prepare browser
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.55.0
+          python -m playwright install --with-deps chromium
+      - name: Read public daily CSV using the site's normal JavaScript session
+        run: |
+          mkdir -p browser-public-data
+          python - <<'PY'
+          import asyncio,pathlib,json,hashlib,datetime
+          from playwright.async_api import async_playwright
+          root=pathlib.Path('browser-public-data')
+          async def main():
+              report={'source':'Stooq public daily CSV','instrument':'AUDUSD','requested_window':'2005-01-01 through 2025-12-31','url':'https://stooq.com/q/d/l/?s=audusd&i=d&d1=20050101&d2=20251231','price_side':'UNSPECIFIED_BY_SOURCE','timestamp_convention':'DATE_ONLY_NOT_A_VERIFIED_UTC_EXECUTION_TIMESTAMP','generated_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'credentials_used':False}
+              async with async_playwright() as p:
+                  browser=await p.chromium.launch(headless=True)
+                  context=await browser.new_context(accept_downloads=True)
+                  page=await context.new_page()
+                  downloaded=[]
+                  async def save(d):
+                      target=root/'AUDUSD_stooq_daily.csv'
+                      await d.save_as(target);b=target.read_bytes();downloaded.append({'file':target.name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})
+                  page.on('download',save)
+                  try:
+                      await page.goto(report['url'],wait_until='domcontentloaded',timeout=45000)
+                  except Exception as e:report['navigation_note']=str(e)
+                  for i in range(60):
+                      if downloaded:break
+                      await asyncio.sleep(1)
+                  report['downloads']=downloaded
+                  if not downloaded:report['page_title']=await page.title();report['text_excerpt']=(await page.locator('body').inner_text())[:300]
+                  await browser.close()
+              (root/'receipt.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))
+          asyncio.run(main())
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-audusd-browser-csv
+          path: browser-public-data/
+          retention-days: 1
+          if-no-files-found: error
