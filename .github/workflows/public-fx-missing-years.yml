@@ -1,0 +1,41 @@
+name: Public FX missing daily years
+on:
+  push:
+    paths: ['.github/workflows/public-fx-missing-years.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - name: Pinned public downloader
+        run: npm install --ignore-scripts --no-audit --no-fund dukascopy-node@1.50.0
+      - name: Recover only incomplete quote years
+        shell: python
+        run: |
+          import subprocess,pathlib,time,json,hashlib,csv
+          root=pathlib.Path('public-missing-years');root.mkdir();receipt=[]
+          for sym,year in [('audusd',2005),('audusd',2011),('audusd',2014),('usdcad',2008),('usdcad',2014)]:
+              name=f'{sym}_d1_bid_{year}';attempts=[]
+              for retry in range(6):
+                  cmd=['./node_modules/.bin/dukascopy-node','-i',sym,'-from',f'{year}-01-01','-to',f'{year+1}-01-01','-t','d1','-p','bid','-f','csv','-df','iso','-v','-bs','1','-r','1','-rp','5000','-dir',str(root),'-fn',name]
+                  try:
+                      r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=18);(root/f'{name}_{retry}.log').write_bytes(r.stdout);item={'attempt':retry,'exit':r.returncode};attempts.append(item)
+                      p=root/(name+'.csv')
+                      if p.exists() and p.stat().st_size>100:
+                          b=p.read_bytes();rows=list(csv.DictReader(b.decode().splitlines()));item.update(rows=len(rows),sha256=hashlib.sha256(b).hexdigest())
+                          if r.returncode==0 and len(rows)>250:item['complete_year_download']=True;break
+                  except Exception as e:attempts.append({'attempt':retry,'error':str(e)})
+                  time.sleep(5+retry*3)
+              receipt.append({'symbol':sym,'year':year,'file':name+'.csv','attempts':attempts});(root/'receipt.json').write_text(json.dumps(receipt,indent=2));time.sleep(3)
+          print(json.dumps(receipt,indent=2))
+      - name: Retain retrieved public years
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-fx-missing-years
+          path: public-missing-years/
+          retention-days: 1
+          if-no-files-found: error
