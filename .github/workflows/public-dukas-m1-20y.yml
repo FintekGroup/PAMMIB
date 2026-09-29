@@ -1,0 +1,64 @@
+name: Public Dukascopy M1 2006-2025 cache
+on:
+  push:
+    paths: ['.github/workflows/public-dukas-m1-20y.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  year:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        symbol: [eurusd, usdcad, audusd]
+        year: [2006,2007,2008,2009,2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,2020,2021,2022,2023,2024,2025]
+    steps:
+      - name: Install pinned public downloader
+        run: npm install --ignore-scripts --no-audit --no-fund dukascopy-node@1.50.0
+      - name: Download one public bid-M1 year with bounded retries
+        shell: python
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          YEAR: ${{ matrix.year }}
+        run: |
+          import os,subprocess,pathlib,time,json,hashlib,csv,datetime
+          sym=os.environ['SYMBOL'];year=int(os.environ['YEAR'])
+          root=pathlib.Path('out');root.mkdir()
+          name=f'{sym}_m1_bid_{year}'
+          receipt={'provider':'Dukascopy','downloader':'dukascopy-node@1.50.0','symbol':sym.upper(),'year':year,'price_side':'BID','timeframe':'M1','strategy_code_included':False,'attempts':[]}
+          cmd=['./node_modules/.bin/dukascopy-node','-i',sym,'-from',f'{year}-01-01','-to',f'{year+1}-01-01','-t','m1','-p','bid','-f','csv','-df','iso','-v','-bs','2','-bp','1200','-r','2','-rp','5000','-dir',str(root),'-fn',name]
+          ok=False
+          for attempt in range(3):
+            try:
+              r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=780)
+              (root/f'{name}_attempt{attempt}.log').write_bytes(r.stdout)
+              rec={'attempt':attempt,'exit':r.returncode}
+              p=root/f'{name}.csv'
+              if p.exists() and p.stat().st_size>100:
+                b=p.read_bytes()
+                with p.open(newline='') as f: rows=list(csv.DictReader(f))
+                rec.update(bytes=len(b),rows=len(rows),sha256=hashlib.sha256(b).hexdigest(),first=rows[0].get('timestamp') if rows else None,last=rows[-1].get('timestamp') if rows else None)
+                if r.returncode==0 and len(rows)>100000 and str(rows[0].get('timestamp','')).startswith(str(year)) and str(rows[-1].get('timestamp','')).startswith(str(year)):
+                  rec['complete']=True;ok=True
+              receipt['attempts'].append(rec)
+              if ok: break
+            except Exception as e:
+              receipt['attempts'].append({'attempt':attempt,'error':repr(e)})
+            time.sleep(8+attempt*10)
+          receipt['complete']=ok
+          receipt['finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+          (root/'receipt.json').write_text(json.dumps(receipt,indent=2))
+          print(json.dumps(receipt,indent=2))
+          if not ok: raise SystemExit(2)
+      - name: Retain public M1 year and receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dukas-m1-bid-${{ matrix.symbol }}-${{ matrix.year }}
+          path: out/
+          retention-days: 2
+          if-no-files-found: error
+          compression-level: 9
