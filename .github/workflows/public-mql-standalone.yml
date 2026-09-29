@@ -1,0 +1,36 @@
+name: Public standalone MQL compilers
+on:
+  push:
+    paths: ['.github/workflows/public-mql-standalone.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download official standalone compiler executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force toolchain | Out-Null
+          $urls=@{
+            'mql.exe'='https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mql.exe';
+            'mql64.exe'='https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mql64.exe'
+          }
+          $receipt=@{public_vendor_tools_only=$true;user_strategy_uploaded=$false;files=@()}
+          foreach($n in $urls.Keys){
+            Invoke-WebRequest -Uri $urls[$n] -OutFile "toolchain/$n"
+            $f=Get-Item "toolchain/$n"
+            $h=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            $receipt.files += @{name=$n;url=$urls[$n];bytes=$f.Length;sha256=$h;version=$f.VersionInfo.FileVersion}
+          }
+          $receipt|ConvertTo-Json -Depth 5|Out-File toolchain/receipt.json -Encoding utf8
+          Get-ChildItem toolchain | Select Name,Length | Format-Table
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-standalone-mql-compilers
+          path: toolchain/
+          retention-days: 1
+          compression-level: 9
