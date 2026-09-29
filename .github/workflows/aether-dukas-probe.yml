@@ -44,10 +44,10 @@ jobs:
             --side both \
             --timezone UTC \
             --cache-root aether-r6/data-probe/cache \
-            --output aether-r6/data-probe/out \
+            --out aether-r6/data-probe/out \
             --concurrency 8 \
             --max-retries 5 \
-            --retry-delay 2s \
+            --retry-delay 2 \
             --verbose 2>&1 | tee aether-r6/data-probe/download.log
           find aether-r6/data-probe/out -type f -maxdepth 2 -print -exec wc -l {} \;
           find aether-r6/data-probe/out -type f -maxdepth 2 -exec sha256sum {} \; > aether-r6/data-probe/SHA256SUMS.txt
