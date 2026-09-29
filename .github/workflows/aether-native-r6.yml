@@ -1,0 +1,140 @@
+name: Aether Native Compile R6
+
+on:
+  push:
+    branches: [aether-native-r6]
+    paths:
+      - 'aether-r6/**'
+      - '.github/workflows/aether-native-r6.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-mt4:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install MT4 from MetaQuotes CDN
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $setup=Join-Path $env:RUNNER_TEMP 'mt4setup.exe'
+          Invoke-WebRequest -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe' -OutFile $setup -UseBasicParsing
+          $sha=(Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "MT4 setup sha256=$sha bytes=$((Get-Item $setup).Length)"
+          $p=Start-Process -FilePath $setup -ArgumentList '/auto' -PassThru
+          if(-not $p.WaitForExit(600000)){ try{$p.Kill()}catch{}; throw 'MT4 install timeout' }
+          Get-Process terminal -ErrorAction SilentlyContinue | Stop-Process -Force
+          $candidates=@('C:\Program Files (x86)\MetaTrader 4\metaeditor.exe','C:\Program Files\MetaTrader 4\metaeditor.exe')
+          $editor=$candidates | Where-Object {Test-Path $_} | Select-Object -First 1
+          if(-not $editor){
+            $editor=Get-ChildItem 'C:\Program Files (x86)','C:\Program Files' -Recurse -Filter metaeditor.exe -ErrorAction SilentlyContinue | Where-Object {$_.FullName -notmatch 'MetaTrader 5'} | Select-Object -ExpandProperty FullName -First 1
+          }
+          if(-not $editor){ throw 'MT4 metaeditor.exe not found' }
+          "MT4_EDITOR=$editor" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $fi=Get-Item $editor
+          @("editor_path=$editor","editor_version=$($fi.VersionInfo.FileVersion)","editor_sha256=$((Get-FileHash $editor -Algorithm SHA256).Hash.ToLowerInvariant())") | Set-Content aether-r6\mt4\compiler_environment.txt
+      - name: Compile all MQ4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Continue'
+          $editor=$env:MT4_EDITOR
+          $failed=0
+          $sources=Get-ChildItem aether-r6\mt4 -Filter *.mq4 -File
+          foreach($src in $sources){
+            $ex4=[IO.Path]::ChangeExtension($src.FullName,'.ex4')
+            $log=[IO.Path]::ChangeExtension($src.FullName,'.compile.log')
+            Remove-Item $ex4,$log -Force -ErrorAction SilentlyContinue
+            $start=Get-Date
+            Start-Sleep -Milliseconds 1100
+            $p=Start-Process -FilePath $editor -ArgumentList @("/compile:$($src.FullName)","/log:$log") -PassThru -Wait
+            $txt=''
+            if(Test-Path $log){
+              $txt=Get-Content $log -Raw -Encoding Unicode -ErrorAction SilentlyContinue
+              if(-not $txt -or $txt -notmatch '[A-Za-z]'){ $txt=Get-Content $log -Raw -ErrorAction SilentlyContinue }
+              Write-Host "=== $($src.Name) ==="; Write-Host $txt
+            }
+            $errors=$null;$warnings=$null
+            if($txt -match 'Result:\s*(\d+)\s*errors?,\s*(\d+)\s*warnings?'){ $errors=[int]$Matches[1];$warnings=[int]$Matches[2] }
+            $ok=(Test-Path $ex4) -and ((Get-Item $ex4).Length -gt 0) -and ((Get-Item $ex4).LastWriteTime -gt $start) -and ($errors -eq 0)
+            if(-not $ok){ $failed=1; Write-Host "::error::$($src.Name) compile gate failed errors=$errors warnings=$warnings ex4=$(Test-Path $ex4)" }
+          }
+          if($failed){ exit 1 }
+      - name: Upload MT4 outputs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: aether-r6-mt4-${{ github.sha }}
+          path: |
+            aether-r6/mt4/*.mq4
+            aether-r6/mt4/*.ex4
+            aether-r6/mt4/*.log
+            aether-r6/mt4/compiler_environment.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  compile-mt5:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install MT5 from MetaQuotes CDN
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $setup=Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          Invoke-WebRequest -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' -OutFile $setup -UseBasicParsing
+          $sha=(Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "MT5 setup sha256=$sha bytes=$((Get-Item $setup).Length)"
+          $p=Start-Process -FilePath $setup -ArgumentList '/auto' -PassThru
+          if(-not $p.WaitForExit(600000)){ try{$p.Kill()}catch{}; throw 'MT5 install timeout' }
+          Get-Process terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
+          $editor='C:\Program Files\MetaTrader 5\metaeditor64.exe'
+          if(-not (Test-Path $editor)){
+            $editor=Get-ChildItem 'C:\Program Files','C:\Program Files (x86)' -Recurse -Filter metaeditor64.exe -ErrorAction SilentlyContinue | Where-Object {$_.FullName -match 'MetaTrader 5'} | Select-Object -ExpandProperty FullName -First 1
+          }
+          if(-not $editor){ throw 'MT5 metaeditor64.exe not found' }
+          "MT5_EDITOR=$editor" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $fi=Get-Item $editor
+          @("editor_path=$editor","editor_version=$($fi.VersionInfo.FileVersion)","editor_sha256=$((Get-FileHash $editor -Algorithm SHA256).Hash.ToLowerInvariant())") | Set-Content aether-r6\mt5\compiler_environment.txt
+      - name: Compile all MQ5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Continue'
+          $editor=$env:MT5_EDITOR
+          $failed=0
+          $sources=Get-ChildItem aether-r6\mt5 -Filter *.mq5 -File
+          foreach($src in $sources){
+            $ex5=[IO.Path]::ChangeExtension($src.FullName,'.ex5')
+            $log=[IO.Path]::ChangeExtension($src.FullName,'.compile.log')
+            Remove-Item $ex5,$log -Force -ErrorAction SilentlyContinue
+            $start=Get-Date
+            Start-Sleep -Milliseconds 1100
+            $p=Start-Process -FilePath $editor -ArgumentList @("/compile:$($src.FullName)","/log:$log") -PassThru -Wait
+            $txt=''
+            if(Test-Path $log){
+              $txt=Get-Content $log -Raw -Encoding Unicode -ErrorAction SilentlyContinue
+              if(-not $txt -or $txt -notmatch '[A-Za-z]'){ $txt=Get-Content $log -Raw -ErrorAction SilentlyContinue }
+              Write-Host "=== $($src.Name) ==="; Write-Host $txt
+            }
+            $errors=$null;$warnings=$null
+            if($txt -match 'Result:\s*(\d+)\s*errors?,\s*(\d+)\s*warnings?'){ $errors=[int]$Matches[1];$warnings=[int]$Matches[2] }
+            $ok=(Test-Path $ex5) -and ((Get-Item $ex5).Length -gt 0) -and ((Get-Item $ex5).LastWriteTime -gt $start) -and ($errors -eq 0)
+            if(-not $ok){ $failed=1; Write-Host "::error::$($src.Name) compile gate failed errors=$errors warnings=$warnings ex5=$(Test-Path $ex5)" }
+          }
+          if($failed){ exit 1 }
+      - name: Upload MT5 outputs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: aether-r6-mt5-${{ github.sha }}
+          path: |
+            aether-r6/mt5/*.mq5
+            aether-r6/mt5/*.ex5
+            aether-r6/mt5/*.log
+            aether-r6/mt5/compiler_environment.txt
+          if-no-files-found: error
+          retention-days: 30
