@@ -1,0 +1,51 @@
+name: Public MetaEditor5 split retrieval
+on:
+  push:
+    paths: ['.github/workflows/public-metaeditor5-split.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vendor:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Retrieve official compiler and split public vendor files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force toolchain\core,toolchain\deps,toolchain\meta | Out-Null
+          $url='https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
+          Invoke-WebRequest -Uri $url -OutFile toolchain\mt5setup.exe
+          $install='C:\aq-mt5'
+          $p=Start-Process -FilePath "$pwd\toolchain\mt5setup.exe" -ArgumentList '/auto',"/path:$install" -PassThru
+          for($i=0;$i -lt 90;$i++){ if(Test-Path "$install\metaeditor64.exe"){break}; Start-Sleep -Seconds 3 }
+          Get-Process terminal64,metatester64,metaeditor64,mt5setup -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          if(!(Test-Path "$install\metaeditor64.exe")){ throw 'metaeditor64.exe not found' }
+          Copy-Item "$install\metaeditor64.exe" toolchain\core\
+          Get-ChildItem $install -File | Where-Object { $_.Extension -eq '.dll' } | Copy-Item -Destination toolchain\deps
+          if(Test-Path "$install\MQL5\Include"){ Copy-Item "$install\MQL5\Include" toolchain\deps\Include -Recurse }
+          Get-Item "$install\metaeditor64.exe" | Select-Object FullName,Length,@{n='Version';e={$_.VersionInfo.FileVersion}} | ConvertTo-Json | Out-File toolchain\meta\editor.json -Encoding utf8
+          Get-ChildItem toolchain -Recurse -File | Select-Object FullName,Length | ConvertTo-Json | Out-File toolchain\meta\files.json -Encoding utf8
+          Get-FileHash "$install\metaeditor64.exe" -Algorithm SHA256 | ConvertTo-Json | Out-File toolchain\meta\editor-sha256.json -Encoding utf8
+          @{public_vendor_tools_only=$true;user_strategy_uploaded=$false;source_url=$url;native_compiles=0}|ConvertTo-Json|Out-File toolchain\meta\scope.json -Encoding utf8
+      - name: Upload compiler core
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-metaeditor5-core
+          path: toolchain/core/
+          retention-days: 1
+          compression-level: 0
+      - name: Upload compiler dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-metaeditor5-deps
+          path: toolchain/deps/
+          retention-days: 1
+          compression-level: 9
+      - name: Upload receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-metaeditor5-receipt
+          path: toolchain/meta/
+          retention-days: 1
