@@ -45,6 +45,23 @@ jobs:
           uv sync
           uv run histdata-dl --config ../relay-config.yaml --timeframe m1 --pairs eurusd,usdcad,audusd --verbose
 
+      - name: Download 2025 annual M1 explicitly
+        working-directory: histdata-relay
+        shell: bash
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+          from histdata.api import download_hist_data, TimeFrame, Platform
+          root=Path("../aether_histdata/m1")
+          for pair in ("eurusd","usdcad","audusd"):
+              out=root/pair
+              out.mkdir(parents=True,exist_ok=True)
+              download_hist_data(year="2025", month=None, pair=pair,
+                                 time_frame=TimeFrame.ONE_MINUTE,
+                                 platform=Platform.GENERIC_ASCII,
+                                 output_directory=str(out), verbose=True)
+          PY
+
       - name: Build provenance inventory
         shell: bash
         run: |
