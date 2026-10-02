@@ -34,9 +34,9 @@ jobs:
             month: 12
           request_delay_seconds: 0.75
           pairs:
-            - { code: eurusd, name: "EUR/USD", first: 201901 }
-            - { code: usdcad, name: "USD/CAD", first: 201901 }
-            - { code: audusd, name: "AUD/USD", first: 201901 }
+            - { code: eurusd, name: "EUR/USD", first: 200601 }
+            - { code: usdcad, name: "USD/CAD", first: 200601 }
+            - { code: audusd, name: "AUD/USD", first: 200601 }
           YAML
 
       - name: Download 2019-2025 M1
@@ -91,18 +91,18 @@ jobs:
           Path("AETHER_HISTDATA_2019_2025_INVENTORY.json").write_text(json.dumps({
               "source":"histdata.com via rpitchumani/histdata",
               "classification":"historical M1 bid OHLC; EST without DST; not tick data",
-              "range":"2019-2025",
+              "range":"2006-2025",
               "pairs":["EURUSD","USDCAD","AUDUSD"],
               "files":rows
           },indent=2))
-          assert len(rows)==21, f"expected 21 annual archives, got {len(rows)}"
+          assert len(rows)==60, f"expected 60 annual archives, got {len(rows)}"
           assert all(r["zip_integrity"] for r in rows)
           PY
 
       - name: Upload Aether data artifact
         uses: actions/upload-artifact@v4
         with:
-          name: aether-histdata-m1-2019-2025
+          name: aether-histdata-m1-2006-2025
           path: |
             aether_histdata/
             AETHER_HISTDATA_2019_2025_INVENTORY.json
